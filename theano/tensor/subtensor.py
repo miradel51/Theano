@@ -1,5 +1,6 @@
 from copy import copy
 from itertools import izip
+import os
 import sys
 from textwrap import dedent
 import warnings
@@ -1750,15 +1751,31 @@ class AdvancedIncSubtensor1(Op):
                     opname, x_.type.ndim, y_.type.ndim))
 
         return Apply(self, [x_, y_, ilist_], [x_.type()])
-    
+
+    def c_support_code(self):
+        return """
+        static PyObject * inplace_increment(PyObject *dummy, PyObject *args);
+        """
+
+    def c_libraries(self):
+        return ["cutils_ext"]
+
+    def c_lib_dirs(self):
+        return [os.path.join(config.compiledir, 'cutils_ext')]
+
     def c_code(self, node, name, input_names, output_names, sub):
         x, y, idx = input_names
         out = output_names[0]
         fail = sub['fail']
+        if self.set_instead_of_inc or not self.inplace:
+            raise NotImplementedError("")
         return """
         PyObject *arglist = PyTuple_Pack(3,%(x)s, %(idx)s, %(y)s);
-        //PyObject *result  /*Will be PyNone*/
+        //PyObject *result;  /*Will be PyNone*/
         //result = PyEval_CallObject(inplace_increment, arglist);
+        inplace_increment(NULL, arglist);
+        Py_XDECREF(%(out)s);
+        %(out)s = %(x)s;
         //Py_DECREF(arglist)
         //Py_DECREF(result)
         """ % locals()
