@@ -1212,7 +1212,7 @@ if (err%(name)s != CUDNN_STATUS_SUCCESS) {
         return result % subs
 
     def c_code_cache_version(self):
-        return (0, 6)
+        return (0, 6, version())
 
     def method(self):
         raise NotImplementedError('GpuDnnSoftmaxBase::method')
@@ -1228,6 +1228,7 @@ class GpuDnnSoftmax(GpuDnnSoftmaxBase):
 
     def method(self):
         return """
+#ifndef CUDNN_VERSION
 err%(name)s = cudnnSoftmaxForward(
   _handle,
   algo%(id)d,
@@ -1237,6 +1238,23 @@ err%(name)s = cudnnSoftmaxForward(
   softmax_output_%(id)d,
   CudaNdarray_DEV_DATA(%(outs)s)
 );
+#else
+{
+const float alpha = 1.;
+const float beta = 0.;
+err%(name)s = cudnnSoftmaxForward(
+  _handle,
+  algo%(id)d,
+  mode%(id)d,
+  (void*) &alpha,
+  softmax_input_%(id)d,
+  CudaNdarray_DEV_DATA(%(ins)s),
+  (void*) &beta,
+  softmax_output_%(id)d,
+  CudaNdarray_DEV_DATA(%(outs)s)
+);
+}
+#endif
 """
 
     def grad(self, inp, grads):
@@ -1262,6 +1280,7 @@ class GpuDnnSoftmaxGrad(GpuDnnSoftmaxBase):
 
     def method(self):
         return """
+#ifndef CUDNN_VERSION
 err%(name)s = cudnnSoftmaxBackward(
   _handle,
   algo%(id)d,
@@ -1273,7 +1292,26 @@ err%(name)s = cudnnSoftmaxBackward(
   softmax_output_%(id)d,
   CudaNdarray_DEV_DATA(%(outs)s)
 );
-"""
+#else
+{
+const float alpha = 1.;
+const float beta = 0.;
+err%(name)s = cudnnSoftmaxBackward(
+  _handle,
+  algo%(id)d,
+  mode%(id)d,
+  (void*) &alpha,
+  %(name1)s_%(id)d,
+  CudaNdarray_DEV_DATA(%(ins1)s),
+  %(name0)s_%(id)d,
+  CudaNdarray_DEV_DATA(%(ins0)s),
+  (void*) &beta,
+  softmax_output_%(id)d,
+  CudaNdarray_DEV_DATA(%(outs)s)
+);
+}
+#endif
+        """
 
 
 # Intentation for history
