@@ -20,7 +20,7 @@ from theano.gof import (local_optimizer, EquilibriumDB, ProxyDB,
                         Optimizer, toolbox)
 from theano.gof.opt import LocalMetaOptimizer
 from theano.sandbox.cuda.basic_ops import (
-    gpu_eye, gpu_contiguous,
+    gpu_eye, gpu_contiguous, as_cuda_ndarray_variable,
     gpu_from_host, host_from_gpu, GpuFromHost, HostFromGpu,
     GpuContiguous,
     GpuElemwise, GpuDimShuffle, GpuReshape, GpuCAReduce, GpuFlatten,
@@ -1417,7 +1417,7 @@ def local_conv_gemm(node):
                     # (we need to wrap the result in as_cuda_ndarray_variable,
                     # because we are not allowed to replace a CudaNdarray with
                     # a DimShuffle instance in a graph optimization)
-                    rval = theano.sandbox.cuda.as_cuda_ndarray_variable(
+                    rval = as_cuda_ndarray_variable(
                         GpuCorrMM_gradWeights(border_mode, subsample)(
                             gpu_contiguous(img.dimshuffle(1, 0, 2, 3)),
                             gpu_contiguous(kern.dimshuffle(1, 0, 2, 3))
@@ -2313,3 +2313,59 @@ optdb.register('gpu_scanOp_make_inplace',
                'scan')
 
 import theano.sandbox.cuda.extra_ops
+import theano.compile.builders
+
+
+@register_opt()
+@local_optimizer([theano.compile.builders.OpFromGraph])
+def local_gpu_op_from_graph(node):
+    if (isinstance(node.op, theano.compile.builders.OpFromGraph) and
+        any([(i.owner and isinstance(i.owner.op, HostFromGpu))
+             for i in node.inputs])):
+            # Need to implement updates, givens, ...
+            if node.op.kwargs:
+                for k in node.op.kwargs.keys():
+                    if k not in ['mode']:
+                        return
+            # We make it simple, we suppose all float32 inputs will be
+            # on the GPU and that all outputs in float32 will be on
+            # the GPU.
+            new_outer_inp = []  # new outer outputs.
+            inner_replace = {}
+            for o_inp, i_inp in zip(node.inputs, node.op.inputs):
+                if getattr(o_inp, 'dtype', None) == 'float32':
+                    new_outer_inp.append(as_cuda_ndarray_variable(o_inp))
+                    inner_replace[i_inp] = tensor.as_tensor_variable(
+                        CudaNdarrayType(dtype=i_inp.dtype,
+                                        broadcastable=i_inp.broadcastable)())
+                else:
+                    new_outer_inp.append(inp)
+            new_inner_out = []
+            for out in node.op.outputs:
+                if getattr(out, 'dtype', None) == 'float32':
+                    new = as_cuda_ndarray_variable(out)
+                    new_inner_out.append(new)
+                else:
+                    new_inner_out.append(out)
+
+            # rebuild the inner graph to introduce the gup_from_host
+            # at the start.
+            new = theano.compile.rebuild_collect_shared(
+                new_inner_out, inputs=node.op.inputs,
+                replace=inner_replace,
+                copy_inputs_over=False)
+            (new_inputs, new_outputs, _) = new
+            # new_inputs give us the corresponding to the old inputs.
+            for i in range(len(new_inputs)):
+                if (new_inputs[i].owner and
+                    isinstance(new_inputs[i].owner.op, HostFromGpu)):
+                    new_inputs[i] = new_inputs[i].owner.inputs[0]
+            op = theano.compile.builders.OpFromGraph(
+                new_inputs, new_outputs, **node.op.kwargs)
+
+            ret = op(*new_outer_inp, **dict(return_list=True))
+
+            for i in range(len(ret)):
+                if getattr(node.op.outputs[i], 'dtype', None) == 'float32':
+                    ret[i] = theano.tensor.as_tensor_variable(ret[i])
+            return ret
