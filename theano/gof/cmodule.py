@@ -1427,8 +1427,10 @@ def get_module_cache(dirname, init_args=None):
 
 def get_lib_extension():
     """Return the platform-dependent extension for compiled modules."""
-    if sys.platform in ['win32', 'cygwin']:
+    if sys.platform == 'win32':
         return 'pyd'
+    elif sys.platform == 'cygwin':
+        return 'dll'
     else:
         return 'so'
 
